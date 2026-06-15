@@ -1,0 +1,987 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Jankiman: Nordic Retro - Side-Scroller</title>
+    <style>
+        /* Retro-Arcade Design */
+        @import url('https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap');
+
+        * {
+            box-sizing: border-box;
+            user-select: none;
+            -webkit-user-select: none;
+        }
+
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: #050508;
+            color: #e6e6f0;
+            font-family: 'Press Start 2P', monospace;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            overflow: hidden;
+        }
+
+        #game-container {
+            position: relative;
+            width: 800px;
+            height: 600px;
+            max-width: 100vw;
+            max-height: 75vh;
+            aspect-ratio: 4 / 3;
+            box-shadow: 0 0 30px rgba(255, 102, 0, 0.25), inset 0 0 20px rgba(0,0,0,1);
+            border: 4px solid #332222;
+            background: #000;
+            border-radius: 10px;
+            overflow: hidden;
+            cursor: pointer;
+        }
+
+        canvas {
+            width: 100%;
+            height: 100%;
+            display: block;
+            image-rendering: pixelated;
+        }
+
+        /* Authentischer CRT-Filter */
+        .crt-effect {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: linear-gradient(rgba(18, 16, 16, 0) 50%, rgba(0, 0, 0, 0.25) 50%), linear-gradient(90deg, rgba(255, 0, 0, 0.06), rgba(0, 255, 0, 0.02), rgba(0, 0, 255, 0.06));
+            background-size: 100% 4px, 6px 100%;
+            pointer-events: none;
+            z-index: 10;
+        }
+
+        .crt-vignette {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            box-shadow: inset 0 0 80px rgba(0,0,0,0.85);
+            pointer-events: none;
+            z-index: 11;
+        }
+
+        /* Touch-Steuerung für mobile Geräte */
+        #mobile-controls {
+            display: none;
+            width: 100%;
+            max-width: 800px;
+            justify-content: space-between;
+            padding: 15px;
+            margin-top: 10px;
+            z-index: 20;
+        }
+
+        .control-group {
+            display: flex;
+            gap: 15px;
+        }
+
+        .btn {
+            width: 60px;
+            height: 60px;
+            background: rgba(40, 40, 60, 0.6);
+            border: 2px solid #50ffff;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #50ffff;
+            font-size: 18px;
+            font-weight: bold;
+            touch-action: manipulation;
+            box-shadow: 0 0 10px rgba(50, 255, 255, 0.2);
+        }
+
+        .btn:active {
+            background: rgba(50, 255, 255, 0.4);
+            color: #fff;
+            box-shadow: 0 0 20px rgba(50, 255, 255, 0.6);
+        }
+
+        .action-btn {
+            border-color: #ff3232;
+            color: #ff3232;
+            box-shadow: 0 0 10px rgba(255, 50, 50, 0.2);
+        }
+
+        .action-btn:active {
+            background: rgba(255, 50, 50, 0.4);
+            color: #fff;
+            box-shadow: 0 0 20px rgba(255, 50, 50, 0.6);
+        }
+
+        @media (pointer: coarse) {
+            #mobile-controls {
+                display: flex;
+            }
+        }
+    </style>
+</head>
+<body>
+
+    <div id="game-container">
+        <canvas id="gameCanvas"></canvas>
+        <div class="crt-effect"></div>
+        <div class="crt-vignette"></div>
+    </div>
+
+    <!-- Mobile Steuerungselemente -->
+    <div id="mobile-controls">
+        <div class="control-group">
+            <div class="btn" id="btn-left">◀</div>
+            <div class="btn" id="btn-right">▶</div>
+        </div>
+        <div class="control-group">
+            <div class="btn action-btn" id="btn-jump">A</div>
+            <div class="btn action-btn" id="btn-shoot">B</div>
+        </div>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const gameContainer = document.getElementById('game-container');
+
+        // Virtuelle Auflösung für knackigen Retro-Look
+        const V_WIDTH = 400;
+        const V_HEIGHT = 300;
+        canvas.width = V_WIDTH;
+        canvas.height = V_HEIGHT;
+
+        // Welt-Eigenschaften
+        let WORLD_WIDTH = 1600; // Ein Level ist nun 4 Bildschirme breit!
+        let cameraX = 0;
+
+        // Sound-Synthesizer via Web Audio API
+        let audioCtx = null;
+
+        function initAudio() {
+            if (!audioCtx) {
+                audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            }
+            if (audioCtx && audioCtx.state === 'suspended') {
+                audioCtx.resume();
+            }
+        }
+
+        function playSynthSound(freqStart, freqEnd, duration, type = 'sine') {
+            initAudio();
+            if (!audioCtx) return;
+            try {
+                const osc = audioCtx.createOscillator();
+                const gainNode = audioCtx.createGain();
+                
+                osc.type = type;
+                osc.frequency.setValueAtTime(freqStart, audioCtx.currentTime);
+                osc.frequency.exponentialRampToValueAtTime(freqEnd, audioCtx.currentTime + duration);
+                
+                gainNode.gain.setValueAtTime(0.15, audioCtx.currentTime);
+                gainNode.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + duration);
+                
+                osc.connect(gainNode);
+                gainNode.connect(audioCtx.destination);
+                
+                osc.start();
+                osc.stop(audioCtx.currentTime + duration);
+            } catch (e) {
+                console.log("Audio-Fehler:", e);
+            }
+        }
+
+        const sounds = {
+            jump: () => playSynthSound(140, 550, 0.18, 'sine'),
+            shoot: () => playSynthSound(600, 80, 0.22, 'square'),
+            explode: () => playSynthSound(250, 30, 0.35, 'sawtooth'),
+            coin: () => {
+                playSynthSound(523.25, 523.25, 0.05, 'sine'); // C5
+                setTimeout(() => playSynthSound(659.25, 659.25, 0.15, 'sine'), 50); // E5
+            },
+            levelUp: () => {
+                playSynthSound(330, 660, 0.1, 'sine');
+                setTimeout(() => playSynthSound(440, 880, 0.1, 'sine'), 100);
+                setTimeout(() => playSynthSound(554, 1108, 0.3, 'sine'), 200);
+            }
+        };
+
+        // Farbpalette
+        const COLORS = {
+            black: '#0a0a0f',
+            white: '#e6e6f0',
+            green: '#32ff32',
+            red: '#ff3232',
+            yellow: '#ffff32',
+            cyan: '#32ffff',
+            magenta: '#ff32ff',
+            blue: '#3232ff',
+            darkGray: '#282832',
+            orange: '#ff6600',
+            steelGrey: '#a0a0a8',
+            gold: '#ffd700',
+            skin: '#ffdbac',
+            brown: '#5c4033'
+        };
+
+        // Tastaturbelegung
+        const keys = {};
+        window.addEventListener('keydown', e => {
+            initAudio();
+            keys[e.code] = true;
+            
+            if (["Space", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(e.code)) {
+                e.preventDefault();
+            }
+            
+            if (gameState !== 'PLAYING') {
+                if (e.code === 'Enter' || e.code === 'NumpadEnter' || e.code === 'Space') {
+                    startGame();
+                }
+            }
+        });
+        window.addEventListener('keyup', e => {
+            keys[e.code] = false;
+        });
+
+        // Maus-Klick auf den Bildschirm (Simuliert Münzeinwurf / Start)
+        gameContainer.addEventListener('click', () => {
+            initAudio();
+            window.focus();
+            if (gameState !== 'PLAYING') {
+                startGame();
+            }
+        });
+
+        // Touch-Steuerung für mobile Geräte
+        const touch = { left: false, right: false, jump: false, shoot: false };
+        function setupTouchBtn(id, actionKey) {
+            const btn = document.getElementById(id);
+            btn.addEventListener('touchstart', (e) => {
+                e.preventDefault();
+                initAudio();
+                touch[actionKey] = true;
+                if (gameState !== 'PLAYING') startGame();
+            });
+            btn.addEventListener('touchend', (e) => {
+                e.preventDefault();
+                touch[actionKey] = false;
+            });
+        }
+        setupTouchBtn('btn-left', 'left');
+        setupTouchBtn('btn-right', 'right');
+        setupTouchBtn('btn-jump', 'jump');
+        setupTouchBtn('btn-shoot', 'shoot');
+
+        // Spielelemente Definitionen
+        class Player {
+            constructor() {
+                this.width = 14;
+                this.height = 20;
+                this.reset();
+            }
+
+            reset() {
+                this.x = 50;
+                this.y = 150;
+                this.vx = 0;
+                this.vy = 0;
+                this.onGround = false;
+                this.score = 0;
+                this.lives = 3;
+                this.shootCooldown = 0;
+                this.direction = 1;
+                this.animFrame = 0;
+                this.state = 'STAND'; // STAND, RUN, JUMP
+            }
+
+            jump() {
+                if (this.onGround) {
+                    this.vy = -7.5;
+                    this.onGround = false;
+                    sounds.jump();
+                }
+            }
+
+            shoot() {
+                if (this.shootCooldown === 0) {
+                    const bx = this.x + (this.direction === 1 ? this.width : -8);
+                    const by = this.y + 8;
+                    bullets.push(new Bullet(bx, by, this.direction));
+                    this.shootCooldown = 15;
+                    sounds.shoot();
+                }
+            }
+
+            update(platforms) {
+                const moveSpeed = 2.5;
+                if (keys['ArrowLeft'] || keys['KeyA'] || touch.left) {
+                    this.vx = -moveSpeed;
+                    this.direction = -1;
+                    this.state = 'RUN';
+                } else if (keys['ArrowRight'] || keys['KeyD'] || touch.right) {
+                    this.vx = moveSpeed;
+                    this.direction = 1;
+                    this.state = 'RUN';
+                } else {
+                    this.vx = 0;
+                    if (this.onGround) this.state = 'STAND';
+                }
+
+                if (keys['Space'] || keys['ArrowUp'] || keys['KeyW'] || touch.jump) {
+                    this.jump();
+                }
+
+                if (keys['KeyX'] || keys['KeyJ'] || keys['ControlLeft'] || touch.shoot) {
+                    this.shoot();
+                }
+
+                // Schwerkraft
+                this.vy += 0.35;
+                if (this.vy > 8) this.vy = 8;
+
+                // X Bewegung & Kollision
+                this.x += this.vx;
+                
+                // Weltgrenze links
+                if (this.x < 0) this.x = 0;
+                // Weltgrenze rechts
+                if (this.x > WORLD_WIDTH - this.width) this.x = WORLD_WIDTH - this.width;
+
+                for (let plat of platforms) {
+                    if (this.collidesWith(plat)) {
+                        if (this.vx > 0) this.x = plat.x - this.width;
+                        else if (this.vx < 0) this.x = plat.x + plat.width;
+                    }
+                }
+
+                // Y Bewegung & Kollision
+                this.y += this.vy;
+                this.onGround = false;
+                for (let plat of platforms) {
+                    if (this.collidesWith(plat)) {
+                        if (this.vy > 0) {
+                            this.y = plat.y - this.height;
+                            this.vy = 0;
+                            this.onGround = true;
+                        } else if (this.vy < 0) {
+                            this.y = plat.y + plat.height;
+                            this.vy = 0;
+                        }
+                    }
+                }
+
+                if (!this.onGround) this.state = 'JUMP';
+                this.animFrame = (this.animFrame + 1) % 30;
+
+                if (this.shootCooldown > 0) this.shootCooldown--;
+
+                // In Abgrund gefallen?
+                if (this.y > V_HEIGHT + 20) {
+                    this.lives--;
+                    sounds.explode();
+                    this.x = 50;
+                    this.y = 100;
+                    this.vy = 0;
+                    if (this.lives <= 0) {
+                        gameState = 'GAMEOVER';
+                        if (this.score > highScore) highScore = this.score;
+                    }
+                }
+            }
+
+            collidesWith(rect) {
+                return this.x < rect.x + rect.width &&
+                       this.x + this.width > rect.x &&
+                       this.y < rect.y + rect.height &&
+                       this.y + this.height > rect.y;
+            }
+
+            draw() {
+                // Zeichne relativ zur Kamera!
+                const renderX = this.x - cameraX;
+
+                // 1. Kettenhemd / Tunic (Körper)
+                ctx.fillStyle = '#3a66a3'; // Stahlblau
+                ctx.fillRect(renderX + 1, this.y + 11, 12, 7);
+
+                // Goldener Gürtel
+                ctx.fillStyle = COLORS.gold;
+                ctx.fillRect(renderX + 1, this.y + 15, 12, 2);
+                ctx.fillStyle = COLORS.white; // Gürtelschnalle
+                ctx.fillRect(renderX + 6, this.y + 14, 2, 4);
+
+                // 2. Roter Wikingerbart (Bushy)
+                ctx.fillStyle = COLORS.orange;
+                ctx.fillRect(renderX + 2, this.y + 6, 10, 6);
+                if (this.direction === 1) {
+                    ctx.fillRect(renderX + 7, this.y + 8, 7, 4);
+                } else {
+                    ctx.fillRect(renderX, this.y + 8, 7, 4);
+                }
+
+                // 3. Gesicht & Augen
+                ctx.fillStyle = COLORS.skin;
+                ctx.fillRect(renderX + 3, this.y + 4, 8, 4);
+                
+                ctx.fillStyle = COLORS.white;
+                let eyeX = this.direction === 1 ? renderX + 7 : renderX + 4;
+                ctx.fillRect(eyeX, this.y + 4, 3, 2);
+                ctx.fillStyle = '#000000';
+                let pupilX = this.direction === 1 ? renderX + 9 : renderX + 4;
+                ctx.fillRect(pupilX, this.y + 4, 1, 2);
+
+                // 4. Wikinger-Helm
+                ctx.fillStyle = COLORS.steelGrey;
+                ctx.fillRect(renderX + 2, this.y, 10, 5);
+                ctx.fillStyle = '#d0d0d8'; 
+                ctx.fillRect(renderX + 1, this.y + 3, 12, 2);
+
+                // Hörner
+                ctx.fillStyle = COLORS.white;
+                // Linkes Horn
+                ctx.fillRect(renderX + 1, this.y - 3, 2, 4);
+                ctx.fillRect(renderX - 1, this.y - 4, 3, 2);
+                ctx.fillStyle = COLORS.gold;
+                ctx.fillRect(renderX - 1, this.y - 5, 1, 2);
+
+                ctx.fillStyle = COLORS.white;
+                // Rechtes Horn
+                ctx.fillRect(renderX + 11, this.y - 3, 2, 4);
+                ctx.fillRect(renderX + 12, this.y - 4, 3, 2);
+                ctx.fillStyle = COLORS.gold;
+                ctx.fillRect(renderX + 14, this.y - 5, 1, 2);
+
+                // 5. Beine & Lederstiefel
+                ctx.fillStyle = COLORS.brown;
+                const isLegAlt = (Math.floor(this.animFrame / 8) % 2 === 0);
+                
+                if (this.state === 'RUN') {
+                    if (isLegAlt) {
+                        ctx.fillRect(renderX + 1, this.y + 18, 4, 3);
+                        ctx.fillRect(renderX + 9, this.y + 17, 4, 3);
+                    } else {
+                        ctx.fillRect(renderX + 2, this.y + 17, 4, 3);
+                        ctx.fillRect(renderX + 8, this.y + 18, 4, 3);
+                    }
+                } else {
+                    ctx.fillRect(renderX + 2, this.y + 18, 4, 3);
+                    ctx.fillRect(renderX + 8, this.y + 18, 4, 3);
+                }
+            }
+        }
+
+        class Bullet {
+            constructor(x, y, dir) {
+                this.x = x;
+                this.y = y;
+                this.vx = dir * 5.5;
+                this.width = 6;
+                this.height = 3;
+                this.active = true;
+            }
+            update() {
+                this.x += this.vx;
+                if (this.x < cameraX || this.x > cameraX + V_WIDTH) this.active = false;
+            }
+            draw() {
+                ctx.fillStyle = Math.random() > 0.5 ? COLORS.cyan : COLORS.white;
+                ctx.fillRect(this.x - cameraX, this.y, this.width, this.height);
+            }
+        }
+
+        // Der Runenstein am Level-Ende
+        class Goal {
+            constructor(x, y) {
+                this.x = x;
+                this.y = y;
+                this.width = 24;
+                this.height = 36;
+            }
+            collidesWith(rect) {
+                return this.x < rect.x + rect.width &&
+                       this.x + this.width > rect.x &&
+                       this.y < rect.y + rect.height &&
+                       this.y + this.height > rect.y;
+            }
+            draw() {
+                const renderX = this.x - cameraX;
+                // Runenstein-Form zeichnen
+                ctx.fillStyle = '#4a4a5a';
+                ctx.fillRect(renderX + 4, this.y, 16, this.height);
+                ctx.fillRect(renderX + 2, this.y + 4, 20, this.height - 8);
+                
+                // Äußere Verzierung
+                ctx.strokeStyle = COLORS.gold;
+                ctx.lineWidth = 1;
+                ctx.strokeRect(renderX + 5, this.y + 3, 14, this.height - 6);
+
+                // Leuchtende blaue Rune in der Mitte
+                ctx.fillStyle = (Math.floor(frameCounter / 15) % 2 === 0) ? COLORS.cyan : '#1155aa';
+                // Rune "Othala" / "Gebo" symbolisch gezeichnet
+                ctx.fillRect(renderX + 11, this.y + 12, 2, 12);
+                ctx.fillRect(renderX + 8, this.y + 14, 8, 2);
+                ctx.fillRect(renderX + 8, this.y + 20, 8, 2);
+            }
+        }
+
+        class Enemy {
+            constructor(x, y, walkRange = 80) {
+                this.startX = x;
+                this.x = x;
+                this.y = y;
+                this.width = 16;
+                this.height = 16;
+                this.vx = 1;
+                this.walkRange = walkRange;
+                this.pulse = 0;
+            }
+            update(platforms) {
+                this.pulse = (this.pulse + 0.1) % (Math.PI * 2);
+                this.x += this.vx;
+
+                if (Math.abs(this.x - this.startX) > this.walkRange) {
+                    this.vx *= -1;
+                }
+
+                this.y += 2;
+                for (let plat of platforms) {
+                    if (this.x < plat.x + plat.width && this.x + this.width > plat.x &&
+                        this.y + this.height >= plat.y && this.y < plat.y + plat.height) {
+                        this.y = plat.y - this.height;
+                        break;
+                    }
+                }
+            }
+            draw() {
+                const renderX = this.x - cameraX;
+                let offset = Math.sin(this.pulse) * 2;
+                ctx.strokeStyle = COLORS.magenta;
+                ctx.lineWidth = 1;
+                ctx.strokeRect(renderX, this.y + offset, this.width, this.height);
+
+                ctx.fillStyle = COLORS.cyan;
+                ctx.fillRect(renderX + 4, this.y + 4 + offset, 8, 8);
+
+                ctx.fillStyle = COLORS.white;
+                ctx.fillRect(renderX + 3, this.y + 2 + offset, 2, 2);
+                ctx.fillRect(renderX + 11, this.y + 2 + offset, 2, 2);
+            }
+        }
+
+        class Coin {
+            constructor(x, y) {
+                this.x = x;
+                this.y = y;
+                this.width = 8;
+                this.height = 8;
+                this.animOffset = Math.random() * 10;
+            }
+            draw(frame) {
+                const renderX = this.x - cameraX;
+                let sine = Math.sin((frame + this.animOffset) * 0.15);
+                let w = Math.max(1, Math.floor(this.width * Math.abs(sine)));
+                let offsetX = (this.width - w) / 2;
+                
+                ctx.fillStyle = COLORS.yellow;
+                ctx.beginPath();
+                ctx.ellipse(renderX + offsetX + w/2, this.y + this.height/2, w/2, this.height/2, 0, 0, Math.PI*2);
+                ctx.fill();
+            }
+        }
+
+        class Platform {
+            constructor(x, y, width, height) {
+                this.x = x;
+                this.y = y;
+                this.width = width;
+                this.height = height;
+            }
+            draw() {
+                const renderX = this.x - cameraX;
+                ctx.fillStyle = COLORS.darkGray;
+                ctx.fillRect(renderX, this.y, this.width, this.height);
+                
+                ctx.fillStyle = COLORS.green;
+                ctx.fillRect(renderX, this.y, this.width, 3);
+
+                // Gittereffekt einzeichnen
+                ctx.strokeStyle = COLORS.black;
+                ctx.lineWidth = 1;
+                for (let px = this.x + 8; px < this.x + this.width; px += 16) {
+                    ctx.beginPath();
+                    ctx.moveTo(px - cameraX, this.y + 3);
+                    ctx.lineTo(px - cameraX, this.y + this.height);
+                    ctx.stroke();
+                }
+            }
+        }
+
+        class Particle {
+            constructor(x, y, color) {
+                this.x = x;
+                this.y = y;
+                this.vx = (Math.random() - 0.5) * 4;
+                this.vy = (Math.random() - 0.5) * 4;
+                this.color = color;
+                this.life = 30;
+            }
+            update() {
+                this.x += this.vx;
+                this.y += this.vy;
+                this.life--;
+            }
+            draw() {
+                ctx.fillStyle = this.color;
+                let size = Math.max(1, Math.floor(this.life / 10));
+                ctx.fillRect(this.x - cameraX, this.y, size, size);
+            }
+        }
+
+        // Spielstatus Variablen
+        let gameState = 'ATTRACT'; // ATTRACT, PLAYING, GAMEOVER, VICTORY
+        let player = new Player();
+        let platforms = [];
+        let enemies = [];
+        let coins = [];
+        let bullets = [];
+        let particles = [];
+        let goal = null;
+        let highScore = 10000;
+        let level = 1;
+        let frameCounter = 0;
+
+        function loadLevel() {
+            platforms = [];
+            enemies = [];
+            coins = [];
+            bullets = [];
+            particles = [];
+            
+            WORLD_WIDTH = 1600; // Breite auf 1600 Pixel vergrößert!
+
+            if (level === 1) {
+                // Bodenplatten mit Sprunglöchern (Abgründe!)
+                platforms.push(new Platform(0, 270, 300, 30));
+                platforms.push(new Platform(380, 270, 400, 30)); // Erstes Loch bei X=300 bis 380
+                platforms.push(new Platform(860, 270, 350, 30)); // Zweites Loch bei X=780 bis 860
+                platforms.push(new Platform(1300, 270, 300, 30)); // Drittes Loch bei X=1210 bis 1300
+
+                // Schwebende Plattformen für Sprungpassagen
+                platforms.push(new Platform(100, 200, 80, 12));
+                platforms.push(new Platform(280, 190, 60, 12));
+                platforms.push(new Platform(450, 180, 120, 12));
+                platforms.push(new Platform(620, 130, 80, 12));
+                platforms.push(new Platform(800, 200, 100, 12));
+                platforms.push(new Platform(950, 150, 120, 12));
+                platforms.push(new Platform(1150, 200, 100, 12));
+                platforms.push(new Platform(1320, 160, 120, 12));
+
+                // Münzen über dem Weg verteilt
+                coins.push(
+                    new Coin(120, 170), new Coin(150, 170),
+                    new Coin(300, 150),
+                    new Coin(500, 140), new Coin(530, 140),
+                    new Coin(650, 100),
+                    new Coin(820, 170), new Coin(850, 170),
+                    new Coin(1000, 120), new Coin(1030, 120),
+                    new Coin(1200, 170),
+                    new Coin(1350, 120)
+                );
+
+                // Patrouillierende Gegner
+                enemies.push(
+                    new Enemy(200, 240, 50),
+                    new Enemy(480, 240, 80),
+                    new Enemy(900, 240, 100),
+                    new Enemy(1050, 120, 40),
+                    new Enemy(1400, 240, 60)
+                );
+
+                // Runenstein am Ende des Levels
+                goal = new Goal(1500, 234);
+
+            } else if (level === 2) {
+                // Level 2: Schwierigere Plattformen & Abgründe
+                platforms.push(new Platform(0, 270, 200, 30));
+                platforms.push(new Platform(280, 250, 180, 30));
+                platforms.push(new Platform(540, 270, 250, 30));
+                platforms.push(new Platform(880, 240, 150, 30));
+                platforms.push(new Platform(1100, 270, 150, 30));
+                platforms.push(new Platform(1320, 250, 280, 30));
+
+                // Schwebende Stufen
+                platforms.push(new Platform(150, 190, 50, 12));
+                platforms.push(new Platform(230, 140, 50, 12));
+                platforms.push(new Platform(420, 180, 80, 12));
+                platforms.push(new Platform(520, 120, 60, 12));
+                platforms.push(new Platform(750, 190, 80, 12));
+                platforms.push(new Platform(850, 130, 50, 12));
+                platforms.push(new Platform(1050, 180, 60, 12));
+                platforms.push(new Platform(1220, 150, 80, 12));
+
+                // Münzen platzieren
+                coins.push(
+                    new Coin(170, 160), new Coin(250, 110),
+                    new Coin(450, 150), new Coin(550, 90),
+                    new Coin(780, 160), new Coin(870, 100),
+                    new Coin(1080, 150), new Coin(1250, 120)
+                );
+
+                // Gefährlichere Monster
+                enemies.push(
+                    new Enemy(300, 220, 60),
+                    new Enemy(600, 240, 80),
+                    new Enemy(900, 210, 50),
+                    new Enemy(1120, 240, 60),
+                    new Enemy(1350, 220, 80),
+                    new Enemy(1480, 220, 50)
+                );
+
+                // Runenstein am Ende des Levels
+                goal = new Goal(1500, 214);
+            } else {
+                gameState = 'VICTORY';
+            }
+        }
+
+        function spawnParticles(x, y, color, count = 10) {
+            for (let i = 0; i < count; i++) {
+                particles.push(new Particle(x, y, color));
+            }
+        }
+
+        function startGame() {
+            player.reset();
+            level = 1;
+            loadLevel();
+            gameState = 'PLAYING';
+            sounds.coin();
+        }
+
+        // Haupt-Updateschleife
+        function update() {
+            frameCounter++;
+
+            if (gameState === 'PLAYING') {
+                player.update(platforms);
+
+                // Sanfte Kamera-Verfolgung (Scrolling)
+                let targetCamX = player.x - V_WIDTH / 2;
+                // Kamera dämpfen
+                cameraX += (targetCamX - cameraX) * 0.1;
+                // Begrenzen an den Weltgrenzen
+                if (cameraX < 0) cameraX = 0;
+                if (cameraX > WORLD_WIDTH - V_WIDTH) cameraX = WORLD_WIDTH - V_WIDTH;
+
+                // Schüsse updaten
+                for (let i = bullets.length - 1; i >= 0; i--) {
+                    bullets[i].update();
+                    if (!bullets[i].active) bullets.splice(i, 1);
+                }
+
+                // Gegner updaten
+                for (let i = enemies.length - 1; i >= 0; i--) {
+                    let enemy = enemies[i];
+                    enemy.update(platforms);
+
+                    // Kollision Spieler mit Gegner
+                    if (player.collidesWith(enemy)) {
+                        // Auf Kopf gesprungen
+                        if (player.vy > 0 && player.y + player.height - player.vy <= enemy.y + 4) {
+                            enemies.splice(i, 1);
+                            player.vy = -5.0;
+                            player.score += 200;
+                            sounds.explode();
+                            spawnParticles(enemy.x + 8, enemy.y + 8, COLORS.magenta, 15);
+                            continue;
+                        } else {
+                            player.lives--;
+                            sounds.explode();
+                            spawnParticles(player.x + 8, player.y + 8, COLORS.red, 20);
+                            player.x = 50;
+                            player.y = 100;
+                            player.vy = 0;
+                            if (player.lives <= 0) {
+                                gameState = 'GAMEOVER';
+                                if (player.score > highScore) highScore = player.score;
+                            }
+                        }
+                    }
+
+                    // Schuss trifft Gegner
+                    for (let j = bullets.length - 1; j >= 0; j--) {
+                        let bullet = bullets[j];
+                        if (bullet.x < enemy.x + enemy.width && bullet.x + bullet.width > enemy.x &&
+                            bullet.y < enemy.y + enemy.height && bullet.y + bullet.height > enemy.y) {
+                            enemies.splice(i, 1);
+                            bullets.splice(j, 1);
+                            player.score += 150;
+                            sounds.explode();
+                            spawnParticles(enemy.x + 8, enemy.y + 8, COLORS.cyan, 15);
+                            break;
+                        }
+                    }
+                }
+
+                // Münzen sammeln
+                for (let i = coins.length - 1; i >= 0; i--) {
+                    if (player.collidesWith(coins[i])) {
+                        spawnParticles(coins[i].x + 4, coins[i].y + 4, COLORS.yellow, 8);
+                        coins.splice(i, 1);
+                        player.score += 100;
+                        sounds.coin();
+                    }
+                }
+
+                // Ziel erreicht? (Runenstein berührt)
+                if (goal && goal.collidesWith(player)) {
+                    sounds.levelUp();
+                    level++;
+                    loadLevel();
+                    player.x = 50;
+                    player.y = 100;
+                    player.vy = 0;
+                }
+
+                // Partikel updaten
+                for (let i = particles.length - 1; i >= 0; i--) {
+                    particles[i].update();
+                    if (particles[i].life <= 0) particles.splice(i, 1);
+                }
+            }
+        }
+
+        // Render-Schleife
+        function draw() {
+            ctx.fillStyle = COLORS.black;
+            ctx.fillRect(0, 0, V_WIDTH, V_HEIGHT);
+
+            // Gitterhintergrund mit Parallaxe-Scrolling-Effekt!
+            // Hintergrund bewegt sich mit 15% der Kamerageschwindigkeit
+            let bgOffset = -(cameraX * 0.15) % 40;
+            for (let x = bgOffset; x < V_WIDTH; x += 40) {
+                ctx.strokeStyle = '#0f0f1c';
+                ctx.lineWidth = 1;
+                ctx.beginPath();
+                ctx.moveTo(x, 0);
+                ctx.lineTo(x, V_HEIGHT);
+                ctx.stroke();
+            }
+            for (let y = 0; y < V_HEIGHT; y += 30) {
+                let brightness = 15 + Math.floor(Math.sin(frameCounter * 0.02 + y) * 5);
+                ctx.strokeStyle = `rgb(${brightness}, ${brightness}, ${brightness + 10})`;
+                ctx.lineWidth = 1;
+                ctx.beginPath();
+                ctx.moveTo(0, y);
+                ctx.lineTo(V_WIDTH, y);
+                ctx.stroke();
+            }
+
+            if (gameState === 'ATTRACT') {
+                ctx.textAlign = 'center';
+                
+                ctx.fillStyle = COLORS.cyan;
+                ctx.font = '16px "Press Start 2P"';
+                ctx.fillText('JANKIMAN', V_WIDTH / 2, 80);
+
+                ctx.fillStyle = COLORS.magenta;
+                ctx.font = '8px "Press Start 2P"';
+                ctx.fillText('NORDIC RETRO ADVENTURE', V_WIDTH / 2, 105);
+
+                if (Math.floor(frameCounter / 20) % 2 === 0) {
+                    ctx.fillStyle = COLORS.yellow;
+                    ctx.font = '14px "Press Start 2P"';
+                    ctx.fillText('INSERT COIN', V_WIDTH / 2, 155);
+                }
+
+                ctx.fillStyle = COLORS.white;
+                ctx.font = '6px "Press Start 2P"';
+                ctx.fillText('STEUERUNG: WASD / PFEILTASTEN & LEERTASTE', V_WIDTH / 2, 210);
+                ctx.fillText('SCHIESSEN: X-TASTE / LCTRL', V_WIDTH / 2, 225);
+                ctx.fillStyle = COLORS.green;
+                ctx.fillText('KLICKE BILDSCHIRM ODER ENTER ZUM START', V_WIDTH / 2, 255);
+
+            } else if (gameState === 'PLAYING') {
+                // Spielelemente rendern (Kamera-Offset ist in den draw-Methoden implementiert)
+                platforms.forEach(p => p.draw());
+                coins.forEach(c => c.draw(frameCounter));
+                enemies.forEach(e => e.draw());
+                bullets.forEach(b => b.draw());
+                particles.forEach(p => p.draw());
+                
+                if (goal) goal.draw();
+                player.draw();
+
+                // HUD (Static relative to viewport!)
+                ctx.textAlign = 'left';
+                ctx.fillStyle = COLORS.white;
+                ctx.font = '6px "Press Start 2P"';
+                ctx.fillText(`SCORE: ${String(player.score).padStart(6, '0')}`, 10, 15);
+                
+                ctx.textAlign = 'center';
+                ctx.fillStyle = COLORS.red;
+                ctx.fillText(`HI-SCORE: ${String(highScore).padStart(6, '0')}`, V_WIDTH / 2, 15);
+
+                ctx.textAlign = 'right';
+                ctx.fillStyle = COLORS.green;
+                ctx.fillText(`LIVES: ${'♥'.repeat(player.lives)}`, V_WIDTH - 10, 15);
+
+                ctx.textAlign = 'left';
+                ctx.fillStyle = COLORS.cyan;
+                ctx.fillText(`STAGE ${level}`, 10, V_HEIGHT - 10);
+
+                // Zielflagge/Entfernungshinweis (Pfeil nach rechts, wenn man weit weg ist)
+                if (goal && player.x < goal.x - 150) {
+                    ctx.textAlign = 'right';
+                    ctx.fillStyle = COLORS.yellow;
+                    ctx.fillText(`ZIEL: ${Math.round((goal.x - player.x)/10)}m ➔`, V_WIDTH - 10, V_HEIGHT - 10);
+                }
+
+            } else if (gameState === 'GAMEOVER') {
+                ctx.textAlign = 'center';
+                ctx.fillStyle = COLORS.red;
+                ctx.font = '16px "Press Start 2P"';
+                ctx.fillText('GAME OVER', V_WIDTH / 2, 110);
+
+                ctx.fillStyle = COLORS.white;
+                ctx.font = '8px "Press Start 2P"';
+                ctx.fillText(`SCORE: ${player.score}`, V_WIDTH / 2, 150);
+                ctx.fillText('KLICKEN ODER ENTER FUER HAUPTMENUE', V_WIDTH / 2, 190);
+
+            } else if (gameState === 'VICTORY') {
+                ctx.textAlign = 'center';
+                ctx.fillStyle = COLORS.green;
+                ctx.font = '16px "Press Start 2P"';
+                ctx.fillText('VICTORY!', V_WIDTH / 2, 110);
+
+                ctx.fillStyle = COLORS.yellow;
+                ctx.font = '8px "Press Start 2P"';
+                ctx.fillText(`SCORE: ${player.score}`, V_WIDTH / 2, 150);
+                ctx.fillStyle = COLORS.white;
+                ctx.fillText('KLICKEN ODER ENTER FUER HAUPTMENUE', V_WIDTH / 2, 190);
+            }
+        }
+
+        // Spielschleifen-Taktung
+        function loop() {
+            update();
+            draw();
+            requestAnimationFrame(loop);
+        }
+
+        loop();
+    </script>
+</body>
+</html>
